@@ -1,0 +1,16 @@
+{
+  "name": "ledger-hardware-agent",
+  "version": "1.0.0",
+  "description": "AI agent with hardware-enforced signing via Ledger DMK + Speculos",
+  "scripts": {
+    "demo": "tsx src/agent.ts"
+  },
+  "dependencies": {
+    "@ledgerhq/device-management-kit": "latest",
+    "@ledgerhq/device-transport-kit-speculos": "latest"
+  },
+  "devDependencies": {
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0"
+  }
+}
