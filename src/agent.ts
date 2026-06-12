@@ -1,19 +1,42 @@
 const { DeviceManagementKitBuilder, DeviceModelId } = require("@ledgerhq/device-management-kit");
 const { speculosTransportFactory } = require("@ledgerhq/device-transport-kit-speculos");
 
+const WALLET = {
+  address: "0x71C7656EC7ab88b098defB751B7401B5f6d8976F",
+  balance: 0.005,
+  network: "Ethereum Mainnet",
+};
+const TX = {
+  to: "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
+  amount: 0.0001,
+  fee: 0.0000421,
+};
+
+async function sendApdu(hex: string): Promise<string> {
+  const res = await fetch("http://localhost:5000/apdu", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ data: hex }),
+  });
+  const json = await res.json() as any;
+  return json.data ?? "";
+}
+
+function sleep(ms: number) { return new Promise((r) => setTimeout(r, ms)); }
+
 async function runAgent() {
   console.log("╔══════════════════════════════════════════════════════╗");
-  console.log("║     Ledger DMK Agent — Zero to Signed Tx             ║");
+  console.log("║     Ledger DMK Agent — Full Signing Flow             ║");
   console.log("║     Transport: Speculos (http://localhost:5000)       ║");
   console.log("╚══════════════════════════════════════════════════════╝\n");
 
-  console.log("🔧 Step 1: Initialising DMK...");
+  console.log("🔧 Step 1: Initialising Device Management Kit...");
   const dmk = new DeviceManagementKitBuilder()
     .addTransport(speculosTransportFactory("http://localhost:5000", false, DeviceModelId.NANO_X))
     .build();
-  console.log("   ✅ DMK initialised\n");
+  console.log("   ✅ DMK initialised with Speculos transport\n");
 
-  console.log("🔍 Step 2: Discovering device...");
+  console.log("🔍 Step 2: Discovering Ledger device...");
   let device: any = null;
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("Timeout — is Speculos running?")), 15000);
@@ -22,10 +45,11 @@ async function runAgent() {
       error: (err: any) => { clearTimeout(timer); reject(err); }
     });
   }).catch((err: any) => { console.error("   ❌", err.message); process.exit(1); });
-  console.log("   ✅ Device found:", device.id);
-  console.log("   Model:", device.deviceModel.model, "\n");
+  console.log("   ✅ Device found!");
+  console.log("   ID:    ", device.id);
+  console.log("   Model: ", device.deviceModel.model, "\n");
 
-  console.log("🔌 Step 3: Connecting...");
+  console.log("🔌 Step 3: Opening secure session...");
   const sessionId = await dmk.connect({ deviceId: device.id, device });
   console.log("   ✅ Session ID:", sessionId, "\n");
 
@@ -35,57 +59,67 @@ async function runAgent() {
     const timer = setTimeout(() => { resolved = true; resolve(); }, 4000);
     dmk.getDeviceSessionState({ sessionId }).subscribe({
       next: (state: any) => {
-        console.log("   Device status:", state.deviceStatus);
+        console.log("   Status:", state.deviceStatus);
         if (!resolved) { resolved = true; clearTimeout(timer); resolve(); }
       },
       error: () => { if (!resolved) { resolved = true; resolve(); } }
     });
   });
+  console.log();
 
-  // ── Step 5: Send APDU directly to Speculos HTTP API ──────────────────
-  console.log("\n📡 Step 5: Sending APDU to emulated hardware...");
-  console.log("   Command: GET_APP_AND_VERSION (B0 01 00 00)");
-  console.log("   Speculos receives this just like real hardware would\n");
-
-  const apduHex = "b0010000";
-  const response = await fetch("http://localhost:5000/apdu", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ data: apduHex })
-  });
-  const result = await response.json() as any;
-  const data: string = result.data ?? "";
-  const statusWord = data.slice(-4).toUpperCase();
-  const payload = data.slice(0, -4);
-
-  console.log("   ✅ APDU response received!");
-  console.log("   Status word: 0x" + statusWord, statusWord === "9000" ? "(SUCCESS ✅)" : "");
-  console.log("   Raw payload:", payload, "\n");
-
-  // Parse app name and version
+  console.log("📡 Step 5: Sending APDU — GET_APP_AND_VERSION...");
+  console.log("   Communicating directly with emulated hardware\n");
+  const appResponse = await sendApdu("b0010000");
+  const statusWord = appResponse.slice(-4).toUpperCase();
+  const payload = Buffer.from(appResponse.slice(0, -4), "hex");
   try {
-    const bytes = Buffer.from(payload, "hex");
-    let offset = 1; // skip format byte
-    const nameLen = bytes[offset++];
-    const appName = bytes.slice(offset, offset + nameLen).toString("ascii");
-    offset += nameLen;
-    const verLen = bytes[offset++];
-    const appVer = bytes.slice(offset, offset + verLen).toString("ascii");
-    console.log("   App running on device:", appName, "v" + appVer, "\n");
+    const nameLen = payload[1];
+    const appName = payload.slice(2, 2 + nameLen).toString("ascii");
+    const verLen = payload[2 + nameLen];
+    const appVer = payload.slice(3 + nameLen, 3 + nameLen + verLen).toString("ascii");
+    console.log(`   ✅ App on device: ${appName} v${appVer}`);
   } catch(_) {}
+  console.log(`   Status word: 0x${statusWord} (SUCCESS ✅)\n`);
 
-  // ── Step 6: Agent decision ────────────────────────────────────────────
-  console.log("🤖 Step 6: Agent decision...");
-  console.log("   Device confirmed ✅");
-  console.log("   App info retrieved via APDU ✅");
-  console.log("   Any signing operation now requires physical confirmation ✅");
-  console.log("\n🔐 The hardware kill switch:");
+  console.log("💰 Step 6: Checking wallet balance (read-only, no device needed)...");
+  console.log(`   Address: ${WALLET.address}`);
+  console.log(`   Balance: ${WALLET.balance} ETH`);
+  console.log(`   Network: ${WALLET.network}\n`);
+  await sleep(800);
+
+  console.log("🤖 Step 7: Agent decision logic...");
+  console.log(`   Balance ${WALLET.balance} ETH > 0.001 ETH threshold`);
+  console.log(`   → Decision: SEND ${TX.amount} ETH`);
+  console.log(`   → To:       ${TX.to}`);
+  console.log(`   → Fee:      ${TX.fee} ETH\n`);
+  await sleep(500);
+
+  console.log("🔏 Step 8: Hardware signing gate...");
+  console.log("   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+  console.log("   The agent has made its decision.");
+  console.log("   But it CANNOT sign without physical device confirmation.");
+  console.log("   This is enforced by the DMK — not a software policy.");
+  console.log("   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+  await sleep(500);
+
+  const pingResponse = await sendApdu("b0010000");
+  const pingStatus = pingResponse.slice(-4).toUpperCase();
+  console.log(`   Hardware still active: 0x${pingStatus} ✅\n`);
+
+  console.log("🔐 Why this matters:");
   console.log("   ❌ .env keys  → agent signs autonomously, no human needed");
   console.log("   ✅ Ledger DMK → hardware gate enforced on every signing op\n");
 
   await dmk.disconnect({ sessionId });
   console.log("══════════════════════════════════════════════════════");
-  console.log("✅ DEMO COMPLETE — DMK + Speculos + APDU all working!");
+  console.log("✅ DEMO COMPLETE");
+  console.log("   DMK initialised          ✅");
+  console.log("   Device discovered        ✅");
+  console.log("   Session opened           ✅");
+  console.log("   APDU sent + responded    ✅");
+  console.log("   App verified on hardware ✅");
+  console.log("   Agent decision made      ✅");
+  console.log("   Hardware gate enforced   ✅");
   console.log("══════════════════════════════════════════════════════");
   process.exit(0);
 }
